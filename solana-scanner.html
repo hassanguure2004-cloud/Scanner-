@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Solana Scanner</title>
+<style>
+body{margin:0;padding:14px;background:#0d0f14;color:#e8eaf0;font:15px/1.4 -apple-system,system-ui,sans-serif}
+h1{font-size:20px;margin:0 0 10px}
+.bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+button{background:#1b2030;color:#e8eaf0;border:1px solid #2c3347;border-radius:8px;padding:8px 12px;font-size:14px}
+button.on{background:#3b5bdb;border-color:#3b5bdb}
+#st{color:#8b93a7;font-size:13px;margin-bottom:8px}
+.c{background:#151926;border:1px solid #232a3d;border-radius:12px;padding:12px;margin-bottom:10px}
+.t{display:flex;justify-content:space-between;align-items:center}
+.n{font-weight:600}.sub{color:#8b93a7;font-size:12px;word-break:break-all}
+.sc{font-weight:700;padding:4px 10px;border-radius:20px;font-size:13px}
+.good{background:#12351f;color:#4ade80}.risky{background:#3a2f10;color:#facc15}.avoid{background:#3a1416;color:#f87171}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:8px 0;font-size:13px}
+.g span{color:#8b93a7}
+.f{display:inline-block;font-size:12px;border-radius:6px;padding:2px 7px;margin:2px 4px 0 0}
+.f.ok{background:#12351f;color:#4ade80}.f.warn{background:#3a2f10;color:#facc15}.f.bad{background:#3a1416;color:#f87171}
+a{color:#7c9cff;font-size:13px;margin-right:12px}
+.note{color:#8b93a7;font-size:12px;margin-top:14px}
+</style></head><body>
+<h1>Solana Scanner</h1>
+<div class="bar" id="bar"></div>
+<div id="st"></div>
+<div id="list"></div>
+<div class="note">Scores come from liquidity, volume, age, buy/sell mix and price moves. They can't detect every scam (e.g. mint/freeze authority, locked liquidity). Check rugcheck.xyz before buying. Not financial advice.</div>
+<script>
+const $=id=>document.getElementById(id);
+let rows=[],filter='all';
+const J=u=>fetch(u).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()});
+const API='https://api.dexscreener.com/';
+
+function fmt(n){n=+n||0;if(n>=1e9)return '$'+(n/1e9).toFixed(2)+'B';if(n>=1e6)return '$'+(n/1e6).toFixed(2)+'M';if(n>=1e3)return '$'+(n/1e3).toFixed(1)+'k';return '$'+n.toFixed(0)}
+function ageStr(ms){if(!ms)return '?';const h=(Date.now()-ms)/36e5;return h<1?Math.round(h*60)+'m':h<48?Math.round(h)+'h':Math.round(h/24)+'d'}
+
+function score(p){
+  const liq=p.liquidity?.usd||0,vol=p.volume?.h24||0,t=p.txns?.h24||{buys:0,sells:0};
+  const age=p.pairCreatedAt?(Date.now()-p.pairCreatedAt)/36e5:null,ch=p.priceChange?.h24||0,fdv=p.fdv||0;
+  let s=50;const f=[];
+  if(liq<5e3){s-=35;f.push(['bad','Liquidity under $5k'])}
+  else if(liq<25e3){s-=10;f.push(['warn','Low liquidity'])}
+  else if(liq>=100e3){s+=20;f.push(['ok','Strong liquidity'])}
+  else{s+=10;f.push(['ok','Decent liquidity'])}
+  const vr=liq?vol/liq:0;
+  if(vr<0.1){s-=15;f.push(['warn','Low trading activity'])}
+  else if(vr>0.5){s+=10;f.push(['ok','Active trading'])}
+  const n=t.buys+t.sells;
+  if(n>20){const b=t.buys/n;if(b<0.4){s-=15;f.push(['bad','Mostly sells'])}else if(b>0.55)s+=5}
+  else{s-=10;f.push(['warn','Very few trades'])}
+  if(age!==null){
+    if(age<1){s-=20;f.push(['bad','Under 1 hour old'])}
+    else if(age<24){s-=10;f.push(['warn','Under 24h old'])}
+    else if(age>168){s+=10;f.push(['ok','Over a week old'])}
+  }
+  if(ch<-60){s-=20;f.push(['bad','Down '+Math.round(ch)+'% today'])}
+  if(fdv&&liq&&fdv/liq>100){s-=10;f.push(['warn','Valuation huge vs liquidity'])}
+  s=Math.max(0,Math.min(100,Math.round(s)));
+  return{p,s,f,v:s>=70?'good':s>=40?'risky':'avoid'};
+}
+
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+
+function render(){
+  const list=$('list');list.textContent='';
+  const shown=rows.filter(r=>filter==='all'||r.v===filter).sort((a,b)=>b.s-a.s);
+  $('st').textContent=shown.length+' tokens · updated '+new Date().toLocaleTimeString();
+  shown.forEach(r=>{
+    const p=r.p,c=el('div','c'),t=el('div','t'),l=el('div');
+    l.append(el('div','n',p.baseToken.symbol+' · '+p.baseToken.name),el('div','sub',p.baseToken.address));
+    t.append(l,el('div','sc '+r.v,r.s+' '+r.v.toUpperCase()));
+    const g=el('div','g');
+    [['Price','$'+p.priceUsd],['Liquidity',fmt(p.liquidity?.usd)],['24h volume',fmt(p.volume?.h24)],['24h change',(p.priceChange?.h24||0)+'%'],['Market cap',fmt(p.marketCap||p.fdv)],['Age',ageStr(p.pairCreatedAt)]]
+      .forEach(([k,v])=>{const d=el('div');d.append(el('span','',k+': '),document.createTextNode(v));g.append(d)});
+    const fl=el('div');r.f.forEach(([k,v])=>fl.append(el('span','f '+k,v)));
+    const lk=el('div');lk.style.marginTop='8px';
+    const a1=el('a','','DexScreener');a1.href=p.url;a1.target='_blank';
+    const a2=el('a','','RugCheck');a2.href='https://rugcheck.xyz/tokens/'+p.baseToken.address;a2.target='_blank';
+    lk.append(a1,a2);
+    c.append(t,g,fl,lk);list.append(c);
+  });
+}
+
+function bar(){
+  const b=$('bar');b.textContent='';
+  [['all','All'],['good','Good'],['risky','Risky'],['avoid','Avoid']].forEach(([k,v])=>{
+    const x=el('button',filter===k?'on':'',v);x.onclick=()=>{filter=k;bar();render()};b.append(x)});
+  const r=el('button','','↻ Refresh');r.onclick=load;b.append(r);
+}
+
+async function load(){
+  $('st').textContent='Loading…';
+  try{
+    const src=await Promise.all(['token-profiles/latest/v1','token-boosts/latest/v1','token-boosts/top/v1'].map(p=>J(API+p).catch(()=>[])));
+    const addrs=[...new Set(src.flat().filter(x=>x.chainId==='solana').map(x=>x.tokenAddress))];
+    const chunks=[];for(let i=0;i<addrs.length;i+=30)chunks.push(addrs.slice(i,i+30));
+    const res=(await Promise.all(chunks.map(c=>J(API+'tokens/v1/solana/'+c.join(',')).catch(()=>[])))).flat();
+    const best={};
+    res.forEach(p=>{const a=p.baseToken.address;if(!best[a]||(p.liquidity?.usd||0)>(best[a].liquidity?.usd||0))best[a]=p});
+    rows=Object.values(best).map(score);
+    render();
+  }catch(e){$('st').textContent='Failed to load: '+e.message}
+}
+bar();load();
+</script></body></html>
